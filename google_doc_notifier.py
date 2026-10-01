@@ -49,7 +49,6 @@ APP_NAME = "2학년부 업무 일지 알림"
 
 INITIAL_DELAY_MS = 30 * 1000          # 시작 후 첫 검사: 30초
 CHECK_INTERVAL_MS = 10 * 60 * 1000    # 이후 반복 검사: 10분
-CONFIRM_DELAY_MS = 3 * 60 * 1000      # 변경이 보이면 3분 뒤 한 번 더 확인 후 알림
 
 DOC_EDIT_URL = f"https://docs.google.com/document/d/{DOC_ID}/edit"
 DOC_TXT_URL = f"https://docs.google.com/document/d/{DOC_ID}/export?format=txt"
@@ -61,7 +60,7 @@ DOC_TXT_URL = f"https://docs.google.com/document/d/{DOC_ID}/export?format=txt"
 # build.bat으로 exe를 만든 뒤 GitHub 저장소의 Releases에
 # 태그(예: v1.0.1)와 함께 아래 UPDATE_ASSET_NAME과 "정확히 같은 이름"으로
 # exe 파일을 첨부해서 올리면, 이미 설치된 프로그램들이 자동으로 내려받아 적용합니다.
-CURRENT_VERSION = "1.0.0"
+CURRENT_VERSION = "1.0.1"
 GITHUB_REPO = "HanahKim37/google_doc_notifier"
 UPDATE_ASSET_NAME = "google_doc_notifier.exe"
 GITHUB_API_LATEST_RELEASE = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -482,7 +481,6 @@ class DocNotifierApp:
         self.is_topmost = tk.BooleanVar(value=True)
 
         self.history = []            # 이번 실행 중 감지한 변경들 [(시각, changes), ...]
-        self.pending_text = None     # 변경이 보였지만 아직 재확인 전인 텍스트
         self.after_id = None         # 예약된 다음 검사
         self.tray = None
         self.tray_queue = queue.Queue()
@@ -614,7 +612,7 @@ class DocNotifierApp:
 
     def check_doc(self, manual=False):
         """
-        manual=True: 트레이의 '지금 검사' → 재확인 없이 바로 판단하고 결과를 알려줌
+        manual=True: 트레이의 '지금 검사' → 바뀐 게 없어도 결과를 알려줌
         """
         self.after_id = None
         next_delay = CHECK_INTERVAL_MS
@@ -625,8 +623,6 @@ class DocNotifierApp:
             if current_text is None:
                 if manual:
                     self.notify("문서를 가져오지 못했습니다. 인터넷 연결을 확인해 주세요.")
-                if self.pending_text is not None:
-                    next_delay = CONFIRM_DELAY_MS
 
             elif self.last_text is None:
                 # 첫 실행 때 다운로드 실패했던 경우: 이제 기준 텍스트만 저장
@@ -637,25 +633,12 @@ class DocNotifierApp:
                     self.notify("감시를 시작했습니다. 이후 변경부터 알려드립니다.")
 
             elif current_text == self.last_text:
-                if self.pending_text is not None:
-                    append_log("변경이 보였다가 원래대로 돌아감 (알림 안 함)")
-                self.pending_text = None
                 if manual:
                     self.notify("바뀐 내용이 없습니다.")
 
-            elif manual or current_text == self.pending_text:
-                # 재확인 완료 (또는 직접 검사) → 알림
-                self.pending_text = None
-                self.apply_change(current_text)
-
             else:
-                # 처음 보이거나 아직 작성 중인 변경 → 잠시 뒤 다시 확인
-                if self.pending_text is None:
-                    append_log("변경 발견, 재확인 대기")
-                else:
-                    append_log("아직 수정 중, 재확인 대기")
-                self.pending_text = current_text
-                next_delay = CONFIRM_DELAY_MS
+                # 변경이 보이면 바로 알림
+                self.apply_change(current_text)
 
         except Exception as e:
             append_log(f"문서 검사 중 오류: {e}")
@@ -935,8 +918,11 @@ class DocNotifierApp:
                 )
 
                 self.text_area.configure(state="normal")
+                new_start = self.text_area.index("end-1c")
                 self.render_changes(changes, time_text)
+                # 새로 추가된 부분의 시작이 보이도록 스크롤
                 self.text_area.see(tk.END)
+                self.text_area.see(new_start)
                 self.text_area.configure(state="disabled")
 
                 self.popup.deiconify()
@@ -960,9 +946,10 @@ class DocNotifierApp:
                     append_log(f"맨 위 고정 변경 오류: {e}")
 
             def close_popup():
+                # 창을 없애지 않고 숨기기만 함 → 다음 변경은 같은 창 아래에 이어서 추가됨
                 try:
                     if self.popup is not None and self.popup.winfo_exists():
-                        self.popup.destroy()
+                        self.popup.withdraw()
                     self.set_tray_alert(False)
                 except Exception as e:
                     append_log(f"팝업 닫기 오류: {e}")
